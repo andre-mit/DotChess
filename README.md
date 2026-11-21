@@ -1,54 +1,138 @@
 # DotChess
 
-Copyright (c) 2020 Dennis Robinson (www.menasoft.com). All rights reserved.  
+An open-source chess rules engine and Event Sourcing API.
 
-Licensed under the MIT License. https://opensource.org/licenses/MIT
+## Directories
 
-Version 1.0.3
+- **DotChess/** — Core rules engine (`netstandard2.1`). Validates moves, checks, castling, en passant, stalemate, 50-move rule, pawn promotion.
+- **DotChess.EventSourcing/** — Domain aggregates and event store (`netstandard2.1`). `ChessMatch` as an aggregate root with commands, events, in-memory replay, and optimistic concurrency.
+- **DotChess.Api/** — HTTP API (.NET 10). Minimal APIs for creating matches, playing moves, checking status, retrieving history, and exporting to PGN.
+- **DotChess.Api.Tests/** — Integration tests (.NET 10, MSTest). Tests the full stack: domain logic, event sourcing, HTTP endpoints.
 
-DotChess is an open source chess rules engine written in C# .NET. (.Net Standard 2.0)
-It is meant to be simple and readable source code. It values readability over speed. (~1.5M moves per second)
+## Quick Start
 
-Sources are hosted on GitHub at https://github.com/MenaceSan/DotChess
-The secondary project documentation pages are at https://www.menasoft.com/dotchess or https://www.menasoft.com/blog/?page_id=542
+### Build
 
-This engine could be ported to C++ (relatively easily) for speed improvement. 
-It has no single GUI. 
-The consumer is meant to provide their own UI. The GUI might be some standalone app or might be a web site.
+```bash
+# Build all projects
+dotnet build DotChess16.sln -c Release -p:GeneratePackageOnBuild=false
 
-# Features:
+# Run tests
+dotnet test DotChess.Api.Tests/DotChess.Api.Tests.csproj -c Release
+```
 
-- Enforce all standard chess rules on all moves. (Castle, EnPassant, Check, Promotion, Stalemate)
-- Get a list of all valid moves from a board state for any / all pieces.
-- Reads/Writes PGN files.
-- Opening Move Db with > 50K master games.
-- Read/Write FEN state
-- Score future moves for best recommendation.
-- Unit Tests for coverage of all basic features. 
-- Unit Test tool for regeneration of the opening moves db.
-- Multi threaded optimization for speeding up complex tests. Uses Parallel .NET name space. ~1.5M moves per second on my i7 CPU.
+### Run the API
 
-# Notes:
+```bash
+dotnet run --project DotChess.Api/DotChess.Api.csproj -c Release
+# Open http://localhost:5000/swagger for interactive docs
+```
 
-Rebuilding the OpeningDb.bin file can be done via the unit tests. Uncomment the [UnitTest] for BuildOpeningDbFile() and run it.
+## API Usage
 
-# Todo:
-- UCI support for engine plugin to GUI apps like Arena.
-- Better scoring optimization. Trimming futile score paths might be a huge CPU savings. Current scoring a rather brute force. So the results are good but expensive.
-e.g. There are > 5M brute force tests to be performed for looking ahead 4 moves on the opening board. Many of those test paths could be obviously discarded, resulting in far fewer tests.
- 
+See [README-API.md](README-API.md) for comprehensive examples.
 
-# Similar Projects:
+### Create a Match
 
-https://stockfishchess.org/
+```bash
+curl -X POST http://localhost:5000/api/matches \
+  -H "Content-Type: application/json" \
+  -d '{"whitePlayer":"Alice","blackPlayer":"Bob"}'
+```
 
-https://github.com/official-stockfish/Stockfish
+### Play a Move
 
-https://github.com/SavchukSergey/ChessRun
+```bash
+curl -X POST http://localhost:5000/api/matches/{id}/moves \
+  -H "Content-Type: application/json" \
+  -d '{"from":"e2","to":"e4"}'
+```
 
-# Other Resources:
-https://fontawesome.com/icons/chess-king?style=solid
+### Get Status
 
-http://www.playwitharena.de/
- 
+```bash
+curl http://localhost:5000/api/matches/{id}
+```
 
+### Get History
+
+```bash
+curl http://localhost:5000/api/matches/{id}/history
+```
+
+### Export to PGN
+
+```bash
+curl http://localhost:5000/api/matches/{id}/pgn
+```
+
+## Architecture
+
+### Domain Model (Event Sourcing)
+
+A `ChessMatch` is an aggregate root that:
+
+1. **Accepts commands** (`CreateMatchCommand`, `PlayMoveCommand`) and validates them.
+2. **Raises events** (`MatchCreated`, `MovePlayed`) only if the command is valid.
+3. **Applies events** to rebuild its state.
+4. **Replays events** to verify consistency: if a stored move diverges from the rules, an exception is raised.
+
+### Event Store
+
+Stores events in streams (one per match). Writes use optimistic concurrency: a write fails if the stream version doesn't match the expected version.
+
+```
+Stream: match-{uuid}
+Version 1: MatchCreated(whitePlayer, blackPlayer)
+Version 2: MovePlayed(ply=1, color=White, from=e2, to=e4, san="e4", ...)
+Version 3: MovePlayed(ply=2, color=Black, from=e7, to=e5, san="e5", ...)
+...
+```
+
+### HTTP API
+
+Endpoints map to domain operations and handle errors:
+
+- `400` — Invalid input.
+- `404` — Match not found.
+- `409` — Concurrency conflict (version mismatch).
+- `422` — Illegal move or finished match.
+
+## Development
+
+### Add a new move type or rule
+
+1. Modify `ChessGame.Move()` or the board validation in `DotChess`.
+2. The aggregate will automatically use the new logic during replay.
+3. Add tests in `DotChess.Api.Tests`.
+
+### Persist events to a database
+
+1. Implement `IEventStore` (e.g., with PostgreSQL or SQLite).
+2. Replace the `InMemoryEventStore` registration in `DotChess.Api/Program.cs`.
+3. No other code changes needed.
+
+## Testing
+
+```bash
+dotnet test DotChess.Api.Tests/ -c Release --logger "console;verbosity=detailed"
+```
+
+Tests include:
+
+- **Happy path**: Creating matches, playing legal moves, verifying status and history.
+- **Validation**: Rejecting illegal moves without recording events.
+- **Concurrency**: Two writers from the same version; second write fails safely.
+- **Replay**: Corrupted history is detected.
+- **PGN export**: Headers, moves, and game result.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
+
+## References
+
+- [PGN Specification](https://www.chess.com/terms/chess-notation)
+- [FEN (Forsyth–Edwards Notation)](https://en.wikipedia.org/wiki/Forsyth%E2%80%93Edwards_Notation)
+- [Event Sourcing](https://martinfowler.com/eaaDev/EventSourcing.html)
+- [DDD Aggregate Root](https://martinfowler.com/bliki/DDD_Aggregate.html)

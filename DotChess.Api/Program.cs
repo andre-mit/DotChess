@@ -52,4 +52,46 @@ app.MapGet("/api/matches/{matchId}/history", (string matchId) =>
 .WithName("GetMatchHistory")
 .WithOpenApi();
 
+// GET /api/matches/{matchId}/pgn - Export match in PGN format
+app.MapGet("/api/matches/{matchId}/pgn", (string matchId) =>
+{
+    var status = service.GetMatchStatus(matchId);
+    var history = service.GetMatchHistory(matchId);
+    if (status == null || history == null)
+        return Results.NotFound();
+
+    var pgnResult = !status.IsEnded
+        ? "*"
+        : string.Equals(status.Winner, "White", StringComparison.OrdinalIgnoreCase) ? "1-0"
+        : string.Equals(status.Winner, "Black", StringComparison.OrdinalIgnoreCase) ? "0-1"
+        : "1/2-1/2";
+
+    var sb = new System.Text.StringBuilder();
+    sb.AppendLine("[Event \"Chess Match\"]");
+    sb.AppendLine("[Site \"??\"]");
+    sb.AppendLine($"[Date \"{history.CreatedAt:yyyy.MM.dd}\"]");
+    sb.AppendLine("[Round \"?\"]");
+    sb.AppendLine($"[White \"{status.WhitePlayer}\"]");
+    sb.AppendLine($"[Black \"{status.BlackPlayer}\"]");
+    sb.AppendLine($"[Result \"{pgnResult}\"]");
+    if (!string.IsNullOrEmpty(status.FEN))
+        sb.AppendLine($"[FEN \"{status.FEN}\"]");
+    sb.AppendLine();
+
+    var movesText = new System.Collections.Generic.List<string>();
+    foreach (var move in history.Moves)
+    {
+        if (!string.IsNullOrEmpty(move.BlackMove))
+            movesText.Add($"{move.MoveNumber}. {move.WhiteMove} {move.BlackMove}");
+        else if (!string.IsNullOrEmpty(move.WhiteMove))
+            movesText.Add($"{move.MoveNumber}. {move.WhiteMove}");
+    }
+    movesText.Add(pgnResult);
+    sb.AppendLine(string.Join(" ", movesText));
+
+    return Results.Text(sb.ToString(), "application/x-chess-pgn");
+})
+.WithName("GetMatchPgn")
+.WithOpenApi();
+
 app.Run();
